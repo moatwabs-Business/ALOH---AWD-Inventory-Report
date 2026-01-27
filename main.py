@@ -55,12 +55,17 @@ inventory_response = requests.get(
 inventory_response.raise_for_status()
 
 inventory = inventory_response.json().get("inventory", [])
-df = pd.DataFrame(inventory)
 
+# 🔴 FLATTEN NESTED JSON (CRITICAL)
+df = pd.json_normalize(inventory, sep="_")
+
+print(f"✅ Amazon data (flattened): {df.shape[0]} rows, {df.shape[1]} columns")
 
 # ================= STEP 3 — CLEAN DATA =================
 df = df.replace([np.inf, -np.inf], "")
 df = df.fillna("")
+
+print("✅ Cleaned NaN/Inf")
 
 # ================= STEP 4 — GOOGLE SHEET OVERWRITE =================
 spreadsheet = gs_client.open(SPREADSHEET_NAME)
@@ -70,6 +75,11 @@ worksheet.clear()
 
 data = [df.columns.tolist()] + df.values.tolist()
 
-worksheet.update("A1", data, value_input_option="USER_ENTERED")
+# ✅ New gspread signature (no warning)
+worksheet.update(
+    values=data,
+    range_name="A1",
+    value_input_option="USER_ENTERED"
+)
 
-
+print(f"🎉 Google Sheet updated with {len(df)} rows")

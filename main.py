@@ -54,12 +54,11 @@ inventory_response = requests.get(
 
 inventory_response.raise_for_status()
 
-inventory = inventory_response.json().get("inventory", [])
+inventory = inventory_response.json()['inventory']
 
 # 🔴 FLATTEN NESTED JSON (CRITICAL)
-df = pd.json_normalize(inventory, sep="_")
+df = pd.DataFrame(inventory)
 
-print(f"✅ Amazon data (flattened): {df.shape[0]} rows, {df.shape[1]} columns")
 
 # ================= STEP 3 — CLEAN DATA =================
 df = df.replace([np.inf, -np.inf], "")

@@ -5,6 +5,44 @@ import pandas as pd
 import numpy as np
 import gspread
 from google.oauth2.service_account import Credentials
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+ALERT_EMAIL_USER = os.environ.get("ALERT_EMAIL_USER")
+ALERT_EMAIL_PASSWORD = os.environ.get("ALERT_EMAIL_PASSWORD")
+
+ALERT_RECIPIENTS = [
+    "moatwa.bs@gmail.com",
+    "segi@aloh.com"
+]
+
+
+def send_error_email(subject, message):
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = ALERT_EMAIL_USER
+        msg["To"] = ", ".join(ALERT_RECIPIENTS)
+        msg["Subject"] = subject
+
+        msg.attach(MIMEText(message, "plain"))
+
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(ALERT_EMAIL_USER, ALERT_EMAIL_PASSWORD)
+            server.sendmail(
+                ALERT_EMAIL_USER,
+                ALERT_RECIPIENTS,
+                msg.as_string()
+            )
+
+        print("📧 Error email sent successfully")
+
+    except Exception as e:
+        print(f"❌ Failed to send error email: {e}")
+
+
+
 
 # ================= CONFIG =================
 SPREADSHEET_NAME = "Inventory Analysis-ALOH-v1"  
@@ -29,34 +67,66 @@ creds = Credentials.from_service_account_info(
 
 gs_client = gspread.authorize(creds)
 
-# ================= STEP 1 — AMAZON TOKEN =================
-token_response = requests.post(
-    "https://api.amazon.com/auth/o2/token",
-    data={
-        "grant_type": "refresh_token",
-        "refresh_token": AMAZON_REFRESH_TOKEN,
-        "client_id": AMAZON_LWA_CLIENT_ID,
-        "client_secret": AMAZON_LWA_CLIENT_SECRET,
-    },
-    timeout=30
-)
 
-token_response.raise_for_status()
-access_token = token_response.json()["access_token"]
+try:
+    # ================= STEP 1 — AMAZON TOKEN =================
+    token_response = requests.post(
+        "https://api.amazon.com/auth/o2/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": AMAZON_REFRESH_TOKEN,
+            "client_id": AMAZON_LWA_CLIENT_ID,
+            "client_secret": AMAZON_LWA_CLIENT_SECRET,
+        },
+        timeout=30
+    )
 
-# ================= STEP 2 — AMAZON INVENTORY =================
-inventory_response = requests.get(
-    "https://sellingpartnerapi-na.amazon.com/awd/2024-05-09/inventory",
-    headers={"x-amz-access-token": access_token},
-    timeout=60
-)
+    if token_response.status_code != 200:
+        raise Exception(f"Token Error {token_response.status_code}: {token_response.text}")
 
-inventory_response.raise_for_status()
+    access_token = token_response.json()["access_token"]
+    print("✅ Amazon access token received")
 
-inventory = inventory_response.json()['inventory']
+    # ================= STEP 2 — AMAZON INVENTORY =================
+    inventory_response = requests.get(
+        "https://sellingpartnerapi-na.amazon.com/awd/2024-05-09/inventory",
+        headers={"x-amz-access-token": access_token},
+        timeout=60
+    )
 
-# 🔴 FLATTEN NESTED JSON (CRITICAL)
-df = pd.DataFrame(inventory)
+    if inventory_response.status_code != 200:
+        raise Exception(
+            f"Inventory API Error {inventory_response.status_code}:\n{inventory_response.text}"
+        )
+
+   inventory = inventory_response.json()['inventory']
+
+    df = pd.DataFrame(inventory)
+
+    print(f"✅ Amazon data (flattened): {df.shape[0]} rows, {df.shape[1]} columns")
+
+except Exception as amazon_error:
+    error_message = f"""
+Amazon AWD Inventory Automation Failed
+
+Error Details:
+{str(amazon_error)}
+
+Time: Automated GitHub Run
+
+Action Required:
+Please review Amazon SP-API credentials, endpoint, or service status.
+"""
+
+    print("❌ Amazon API Error:", amazon_error)
+
+    send_error_email(
+        subject="🚨 Amazon AWD Inventory Automation Failed",
+        message=error_message
+    )
+
+    # Stop execution so bad data is NOT sent to Google Sheets
+    raise
 
 
 # ================= STEP 3 — CLEAN DATA =================

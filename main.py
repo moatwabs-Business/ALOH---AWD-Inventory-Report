@@ -14,7 +14,7 @@ ALERT_EMAIL_PASSWORD = os.environ.get("ALERT_EMAIL_PASSWORD")
 
 ALERT_RECIPIENTS = [
     "moatwa.bs@gmail.com",
-    "segi@aloh.com"
+    # "segi@aloh.com"
 ]
 
 

@@ -48,7 +48,6 @@ access_token = token_response.json()["access_token"]
 inventory_response = requests.get(
     "https://sellingpartnerapi-na.amazon.com/awd/2024-05-09/inventory",
     headers={"x-amz-access-token": access_token},
-    params={"details": "SHOW"},
     timeout=60
 )
 

@@ -89,7 +89,7 @@ try:
 
     # ================= STEP 2 — AMAZON INVENTORY =================
     inventory_response = requests.get(
-        "https://sellingpartnerapi-na.amazon.com/awd/2024-05-09/inventory",
+        "https://sellingpartnerapi-na.amazon.com/awd/2024-05-09/iventory",
         headers={"x-amz-access-token": access_token},
         timeout=60
     )

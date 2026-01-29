@@ -3,13 +3,17 @@ import json
 import requests
 import pandas as pd
 import numpy as np
+import time
 import gspread
+from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 
 # ================= CONFIG =================
 
 SPREADSHEET_NAME = "Inventory Analysis-ALOH-v1" 
 WORKSHEET_NAME = "TEST"      
+
+MAX_GSPREAD_RETRIES = 5
 
 # ================= AMAZON SECRETS =================
 
@@ -63,7 +67,6 @@ inventory_response.raise_for_status()
 
 inventory = inventory_response.json()["inventory"]
 
-# 🔴 FLATTEN NESTED JSON (CRITICAL)
 df = pd.DataFrame(inventory)
 
 print(f"✅ Amazon data loaded: {df.shape[0]} rows, {df.shape[1]} columns")
@@ -75,22 +78,38 @@ df = df.fillna("")
 
 print("✅ Cleaned NaN and Inf values")
 
-# ================= STEP 4 — GOOGLE SHEET FULL OVERWRITE =================
+# ================= STEP 4 — GOOGLE SHEET FULL OVERWRITE (503 SAFE) =================
 
-spreadsheet = gs_client.open(SPREADSHEET_NAME)
-worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
-
-# Clear entire tab
-worksheet.clear()
-
-# Prepare headers + data
 data = [df.columns.tolist()] + df.values.tolist()
 
-# Use new gspread signature
-worksheet.update(
-    values=data,
-    range_name="A1",
-    value_input_option="USER_ENTERED"
-)
+for attempt in range(MAX_GSPREAD_RETRIES):
+    try:
+        spreadsheet = gs_client.open(SPREADSHEET_NAME)
+        worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
 
-print(f"🎉 Google Sheet fully overwritten with {len(df)} rows")
+        print("🧹 Clearing worksheet...")
+        worksheet.clear()
+
+        print("⬆️ Uploading data to Google Sheets...")
+        worksheet.update(
+            values=data,
+            range_name="A1",
+            value_input_option="USER_ENTERED"
+        )
+
+        print(f"🎉 Google Sheet fully overwritten with {len(df)} rows")
+        break
+
+    except APIError as e:
+        status = getattr(e.response, "status_code", None)
+
+        if status == 503:
+            wait = 2 ** attempt
+            print(f"⚠️ Google API 503. Retrying in {wait} seconds... (attempt {attempt+1}/{MAX_GSPREAD_RETRIES})")
+            time.sleep(wait)
+        else:
+            print(f"❌ Google API error: {e}")
+            raise
+
+else:
+    raise Exception("❌ Failed to update Google Sheet after multiple retries (503 errors)")

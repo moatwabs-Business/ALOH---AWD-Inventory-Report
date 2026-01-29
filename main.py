@@ -12,7 +12,7 @@ from datetime import datetime, timezone, timedelta
 # ================= CONFIG =================
 
 SPREADSHEET_NAME = "Inventory Analysis-ALOH-v1" 
-WORKSHEET_NAME = "TEST"      
+WORKSHEET_NAME = "AWD Data API Request"      
 
 MAX_GSPREAD_RETRIES = 5
 

@@ -1,12 +1,13 @@
 import os
 import json
+import time
 import requests
 import pandas as pd
 import numpy as np
-import time
 import gspread
 from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
+from datetime import datetime, timezone, timedelta
 
 # ================= CONFIG =================
 
@@ -71,6 +72,14 @@ df = pd.DataFrame(inventory)
 
 print(f"✅ Amazon data loaded: {df.shape[0]} rows, {df.shape[1]} columns")
 
+# ================= ADD EXTRACTION TIMESTAMP (EST UTC-5) =================
+
+EST_TZ = timezone(timedelta(hours=-5))
+extracted_at = datetime.now(EST_TZ).strftime("%Y-%m-%d %H:%M:%S")
+df["Extracted At (EST)"] = extracted_at
+
+print(f"🕒 Extraction timestamp added (EST): {extracted_at}")
+
 # ================= STEP 3 — CLEAN DATA =================
 
 df = df.replace([np.inf, -np.inf], "")
@@ -78,7 +87,7 @@ df = df.fillna("")
 
 print("✅ Cleaned NaN and Inf values")
 
-# ================= STEP 4 — GOOGLE SHEET FULL OVERWRITE (503 SAFE) =================
+# ================= STEP 4 — GOOGLE SHEET UPDATE (FORMATTING SAFE + 503 SAFE) =================
 
 data = [df.columns.tolist()] + df.values.tolist()
 
@@ -87,8 +96,9 @@ for attempt in range(MAX_GSPREAD_RETRIES):
         spreadsheet = gs_client.open(SPREADSHEET_NAME)
         worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
 
-        print("🧹 Clearing worksheet...")
-        worksheet.clear()
+        # Clear ONLY values (not formatting/formulas)
+        print("🧹 Clearing old values (preserving formatting & formulas)...")
+        worksheet.batch_clear(["A2:Z100000"])
 
         print("⬆️ Uploading data to Google Sheets...")
         worksheet.update(
@@ -97,7 +107,7 @@ for attempt in range(MAX_GSPREAD_RETRIES):
             value_input_option="USER_ENTERED"
         )
 
-        print(f"🎉 Google Sheet fully overwritten with {len(df)} rows")
+        print(f"🎉 Google Sheet updated with {len(df)} rows")
         break
 
     except APIError as e:

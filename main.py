@@ -113,7 +113,6 @@ for item in fba_inventory:
     record = {
 
         "sellerSku": item.get("sellerSku", ""),
-
         "asin": item.get("asin", ""),
 
         "Inventory Supply at FBA":
@@ -138,12 +137,12 @@ print(f"✅ FBA data loaded: {df_fba.shape[0]} rows")
 
 EST_TZ = timezone(timedelta(hours=-5))
 
-extracted_at = datetime.now(EST_TZ).strftime("%Y-%m-%d %H:%M:%S")
+extracted_at = datetime.now(EST_TZ).strftime("%Y-%m-%d %H:%M:%S EST")
 
-df_awd["Extracted At (EST)"] = extracted_at
-df_fba["Extracted At (EST)"] = extracted_at
+df_awd["Extracted At"] = extracted_at
+df_fba["Extracted At"] = extracted_at
 
-print(f"🕒 Extraction timestamp added: {extracted_at} EST")
+print(f"🕒 Extraction timestamp: {extracted_at}")
 
 
 # ================= STEP 5 — CLEAN DATA =================
@@ -157,108 +156,69 @@ df_fba = df_fba.fillna("")
 print("✅ Data cleaned")
 
 
+# ================= FUNCTION TO UPLOAD DATA =================
+
+def upload_to_sheet(worksheet_name, dataframe):
+
+    data = [dataframe.columns.tolist()] + dataframe.values.tolist()
+
+    for attempt in range(MAX_GSPREAD_RETRIES):
+
+        try:
+
+            spreadsheet = gs_client.open(SPREADSHEET_NAME)
+            worksheet = spreadsheet.worksheet(worksheet_name)
+
+            print(f"🧹 Clearing sheet: {worksheet_name}")
+
+            worksheet.batch_clear(["A1:Z100000"])
+
+            print(f"🕒 Writing extraction timestamp to {worksheet_name}")
+
+            worksheet.update(
+                values=[[f"Last Extracted At: {extracted_at}"]],
+                range_name="A1"
+            )
+
+            print(f"⬆️ Uploading data to {worksheet_name}")
+
+            worksheet.update(
+                values=data,
+                range_name="A2",
+                value_input_option="USER_ENTERED"
+            )
+
+            print(f"🎉 {worksheet_name} updated ({len(dataframe)} rows)")
+
+            break
+
+        except APIError as e:
+
+            status = getattr(e.response, "status_code", None)
+
+            if status == 503:
+
+                wait = 2 ** attempt
+
+                print(f"⚠️ Retry in {wait}s...")
+
+                time.sleep(wait)
+
+            else:
+                raise
+
+    else:
+        raise Exception(f"❌ Failed updating {worksheet_name}")
+
+
 # ================= STEP 6 — UPLOAD AWD DATA =================
 
-awd_data = [df_awd.columns.tolist()] + df_awd.values.tolist()
-
-for attempt in range(MAX_GSPREAD_RETRIES):
-
-    try:
-
-        spreadsheet = gs_client.open(SPREADSHEET_NAME)
-
-        worksheet = spreadsheet.worksheet(AWD_WORKSHEET_NAME)
-
-        print("🧹 Clearing AWD sheet...")
-
-        worksheet.batch_clear(["A1:Z100000"])
-
-        print("⬆️ Uploading AWD data...")
-
-        worksheet.update(
-            values=awd_data,
-            range_name="A1",
-            value_input_option="USER_ENTERED"
-        )
-
-        worksheet.update(
-            "H1",
-            f"Last Extracted At: {extracted_at} EST"
-        )
-
-        print(f"🎉 AWD sheet updated ({len(df_awd)} rows)")
-
-        break
-
-    except APIError as e:
-
-        status = getattr(e.response, "status_code", None)
-
-        if status == 503:
-
-            wait = 2 ** attempt
-
-            print(f"⚠️ Retry AWD upload in {wait}s")
-
-            time.sleep(wait)
-
-        else:
-            raise
-
-else:
-    raise Exception("❌ Failed AWD upload")
+upload_to_sheet(AWD_WORKSHEET_NAME, df_awd)
 
 
 # ================= STEP 7 — UPLOAD FBA DATA =================
 
-fba_data = [df_fba.columns.tolist()] + df_fba.values.tolist()
-
-for attempt in range(MAX_GSPREAD_RETRIES):
-
-    try:
-
-        spreadsheet = gs_client.open(SPREADSHEET_NAME)
-
-        worksheet = spreadsheet.worksheet(FBA_WORKSHEET_NAME)
-
-        print("🧹 Clearing Amazon Data API sheet...")
-
-        worksheet.batch_clear(["A1:Z100000"])
-
-        print("⬆️ Uploading FBA data...")
-
-        worksheet.update(
-            values=fba_data,
-            range_name="A1",
-            value_input_option="USER_ENTERED"
-        )
-
-        worksheet.update(
-            "H1",
-            f"Last Extracted At: {extracted_at} EST"
-        )
-
-        print(f"🎉 Amazon Data API sheet updated ({len(df_fba)} rows)")
-
-        break
-
-    except APIError as e:
-
-        status = getattr(e.response, "status_code", None)
-
-        if status == 503:
-
-            wait = 2 ** attempt
-
-            print(f"⚠️ Retry FBA upload in {wait}s")
-
-            time.sleep(wait)
-
-        else:
-            raise
-
-else:
-    raise Exception("❌ Failed FBA upload")
+upload_to_sheet(FBA_WORKSHEET_NAME, df_fba)
 
 
-print("🚀 FULL AMAZON PIPELINE COMPLETED SUCCESSFULLY")
+print("🚀 AMAZON AWD + FBA PIPELINE COMPLETED SUCCESSFULLY")

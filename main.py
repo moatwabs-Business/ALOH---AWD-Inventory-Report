@@ -1,10 +1,13 @@
 import os
 import json
 import time
+import gzip
+import io
 import requests
 import pandas as pd
 import numpy as np
 import gspread
+
 from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timezone, timedelta
@@ -79,6 +82,8 @@ print("✅ Amazon access token received")
 
 def get_awd_inventory():
 
+    print("📦 Getting AWD inventory...")
+
     response = requests.get(
         "https://sellingpartnerapi-na.amazon.com/awd/2024-05-09/inventory",
         headers={"x-amz-access-token": access_token},
@@ -97,6 +102,8 @@ def get_awd_inventory():
 # ================= GET FBA INVENTORY =================
 
 def get_fba_inventory():
+
+    print("📦 Getting FBA inventory...")
 
     response = requests.get(
         "https://sellingpartnerapi-na.amazon.com/fba/inventory/v1/summaries",
@@ -145,7 +152,7 @@ def get_fba_inventory():
 
 def get_units_shipped_t30():
 
-    print("📦 Requesting Units Shipped T30 report...")
+    print("📊 Requesting Sales and Traffic report...")
 
     create_report = requests.post(
         "https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports",
@@ -167,39 +174,68 @@ def get_units_shipped_t30():
 
     report_id = create_report.json()["reportId"]
 
+    print(f"📄 Report ID: {report_id}")
+
     while True:
 
-        status = requests.get(
+        status_response = requests.get(
             f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports/{report_id}",
             headers={"x-amz-access-token": access_token}
-        ).json()
+        )
 
-        if status["processingStatus"] == "DONE":
-            document_id = status["reportDocumentId"]
+        status_response.raise_for_status()
+
+        status_data = status_response.json()
+
+        status = status_data["processingStatus"]
+
+        print(f"⏳ Status: {status}")
+
+        if status == "DONE":
+
+            document_id = status_data["reportDocumentId"]
             break
 
-        print("⏳ Waiting for report...")
+        elif status in ["FATAL", "CANCELLED"]:
+            raise Exception("Report failed")
+
         time.sleep(10)
 
-    doc = requests.get(
+    doc_response = requests.get(
         f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/documents/{document_id}",
         headers={"x-amz-access-token": access_token}
-    ).json()
+    )
 
-    report_json = requests.get(doc["url"]).json()
+    doc_response.raise_for_status()
 
-    df = pd.DataFrame(report_json["salesAndTrafficBySku"])
+    download_url = doc_response.json()["url"]
 
-    df = df[["sku", "unitsShippedT30"]]
+    print("⬇️ Downloading report...")
 
-    df.rename(columns={
-        "sku": "sellerSku",
-        "unitsShippedT30": "Units Shipped T30"
+    compressed = requests.get(download_url)
+
+    compressed.raise_for_status()
+
+    buffer = io.BytesIO(compressed.content)
+
+    with gzip.GzipFile(fileobj=buffer) as gz:
+        content = gz.read().decode("utf-8")
+
+    df = pd.read_csv(io.StringIO(content), sep="\t")
+
+    df_units = df[[
+        "seller-sku",
+        "units-shipped-t30"
+    ]].copy()
+
+    df_units.rename(columns={
+        "seller-sku": "sellerSku",
+        "units-shipped-t30": "Units Shipped T30"
     }, inplace=True)
 
-    print(f"✅ Units shipped rows: {len(df)}")
+    print(f"✅ Units Shipped rows: {len(df_units)}")
 
-    return df
+    return df_units
 
 
 # ================= EXTRACTION DATE =================
@@ -229,12 +265,14 @@ df_fba = df_fba.merge(
 df_fba["Units Shipped T30"] = df_fba["Units Shipped T30"].fillna(0)
 
 df_fba["Extracted At"] = extracted_at
+
 df_awd["Extracted At"] = extracted_at
 
 
 # ================= CLEAN =================
 
 df_fba = df_fba.replace([np.inf, -np.inf], "").fillna("")
+
 df_awd = df_awd.replace([np.inf, -np.inf], "").fillna("")
 
 
@@ -267,12 +305,13 @@ def upload_to_sheet(name, df):
             if getattr(e.response, "status_code", None) == 503:
 
                 wait = 2 ** attempt
+                print(f"⚠️ Retry in {wait}s")
                 time.sleep(wait)
 
             else:
                 raise
 
-    raise Exception("Upload failed")
+    raise Exception("❌ Upload failed")
 
 
 # ================= UPLOAD =================
@@ -281,5 +320,7 @@ upload_to_sheet(AWD_WORKSHEET_NAME, df_awd)
 
 upload_to_sheet(FBA_WORKSHEET_NAME, df_fba)
 
+
+# ================= DONE =================
 
 print("🚀 PIPELINE COMPLETED SUCCESSFULLY")

@@ -165,9 +165,6 @@ def get_units_shipped_t30():
 
     report_id = create_report.json()["reportId"]
 
-    print(f"Report ID: {report_id}")
-
-    # Wait for report
     while True:
 
         status = requests.get(
@@ -175,29 +172,22 @@ def get_units_shipped_t30():
             headers={"x-amz-access-token": access_token}
         ).json()
 
-        processing_status = status["processingStatus"]
-
-        print("Status:", processing_status)
-
-        if processing_status == "DONE":
+        if status["processingStatus"] == "DONE":
 
             document_id = status["reportDocumentId"]
             break
 
-        elif processing_status in ["FATAL", "CANCELLED"]:
+        elif status["processingStatus"] in ["FATAL", "CANCELLED"]:
             raise Exception("Report failed")
 
         time.sleep(10)
 
-    # Download report
     doc = requests.get(
         f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/documents/{document_id}",
         headers={"x-amz-access-token": access_token}
     ).json()
 
-    download_url = doc["url"]
-
-    response = requests.get(download_url)
+    response = requests.get(doc["url"])
 
     response.raise_for_status()
 
@@ -206,18 +196,17 @@ def get_units_shipped_t30():
         sep="\t"
     )
 
-    # Extract and convert numeric properly
     df_units = df[["sku", "units-shipped-t30"]].copy()
-
-    df_units["units-shipped-t30"] = pd.to_numeric(
-        df_units["units-shipped-t30"],
-        errors="coerce"
-    ).fillna(0).astype(int)
 
     df_units.rename(columns={
         "sku": "sellerSku",
         "units-shipped-t30": "Units Shipped T30"
     }, inplace=True)
+
+    df_units["Units Shipped T30"] = pd.to_numeric(
+        df_units["Units Shipped T30"],
+        errors="coerce"
+    ).fillna(0).astype(int)
 
     print(f"✅ Units shipped rows: {len(df_units)}")
 
@@ -237,23 +226,46 @@ df_fba = get_fba_inventory()
 df_units = get_units_shipped_t30()
 
 
-# ================= MERGE =================
+# ================= FULL OUTER JOIN =================
 
-df_fba = df_fba.merge(
+df_final = pd.merge(
+    df_fba,
     df_units,
     on="sellerSku",
-    how="left"
+    how="outer"
 )
 
-df_fba["Units Shipped T30"] = df_fba["Units Shipped T30"].fillna(0).astype(int)
-df_fba["Extracted At"] = extracted_at
 
+# ================= FIX NUMERIC COLUMNS =================
+
+numeric_columns = [
+    "Units Shipped T30",
+    "Inventory Supply at FBA",
+    "Reserved FC Processing",
+    "Reserved Customer Order"
+]
+
+for col in numeric_columns:
+
+    if col in df_final.columns:
+
+        df_final[col] = pd.to_numeric(
+            df_final[col],
+            errors="coerce"
+        ).fillna(0).astype(int)
+
+
+# Fix missing text columns
+df_final["sellerSku"] = df_final["sellerSku"].fillna("")
+df_final["asin"] = df_final.get("asin", "").fillna("")
+
+df_final["Extracted At"] = extracted_at
 df_awd["Extracted At"] = extracted_at
 
 
 # ================= CLEAN =================
 
-df_fba = df_fba.replace([np.inf, -np.inf], "").fillna("")
+df_final = df_final.replace([np.inf, -np.inf], "").fillna("")
 df_awd = df_awd.replace([np.inf, -np.inf], "").fillna("")
 
 
@@ -274,30 +286,7 @@ def upload_to_sheet(name, df):
             worksheet.update(
                 values=data,
                 range_name="A1",
-                value_input_option="USER_ENTERED"
+                value_input_option="RAW"
             )
 
             print(f"Uploaded {len(df)} rows to {name}")
-
-            return
-
-        except APIError as e:
-
-            if getattr(e.response, "status_code", None) == 503:
-
-                wait = 2 ** attempt
-                time.sleep(wait)
-
-            else:
-                raise
-
-    raise Exception("Upload failed")
-
-
-# ================= UPLOAD =================
-
-upload_to_sheet(AWD_WORKSHEET_NAME, df_awd)
-upload_to_sheet(FBA_WORKSHEET_NAME, df_fba)
-
-
-print("🚀 PIPELINE COMPLETED SUCCESSFULLY")

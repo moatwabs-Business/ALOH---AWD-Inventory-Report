@@ -133,16 +133,18 @@ df_fba = pd.DataFrame(fba_records)
 print(f"✅ FBA data loaded: {df_fba.shape[0]} rows")
 
 
-# ================= STEP 4 — ADD EXTRACTION TIMESTAMP COLUMN =================
+# ================= STEP 4 — ADD EXTRACTION DATE COLUMN (DATE ONLY) =================
 
+# Using EST timezone (UTC-5)
 EST_TZ = timezone(timedelta(hours=-5))
 
-extracted_at = datetime.now(EST_TZ).strftime("%Y-%m-%d %H:%M:%S EST")
+# DATE ONLY (YYYY-MM-DD)
+extracted_at = datetime.now(EST_TZ).strftime("%Y-%m-%d")
 
 df_awd["Extracted At"] = extracted_at
 df_fba["Extracted At"] = extracted_at
 
-print(f"🕒 Extraction timestamp added: {extracted_at}")
+print(f"📅 Extraction date added: {extracted_at}")
 
 
 # ================= STEP 5 — CLEAN DATA =================

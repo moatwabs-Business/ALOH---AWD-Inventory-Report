@@ -139,6 +139,7 @@ def get_fba_inventory():
 
             "Reserved Customer Order":
                 reserved.get("customerOrderQuantity", 0)
+
         })
 
     df = pd.DataFrame(records)
@@ -185,15 +186,12 @@ def get_units_shipped_t30():
 
         status_response.raise_for_status()
 
-        status_data = status_response.json()
-
-        status = status_data["processingStatus"]
+        status = status_response.json()["processingStatus"]
 
         print(f"⏳ Status: {status}")
 
         if status == "DONE":
-
-            document_id = status_data["reportDocumentId"]
+            document_id = status_response.json()["reportDocumentId"]
             break
 
         elif status in ["FATAL", "CANCELLED"]:
@@ -210,8 +208,6 @@ def get_units_shipped_t30():
 
     download_url = doc_response.json()["url"]
 
-    print("⬇️ Downloading report...")
-
     compressed = requests.get(download_url)
 
     compressed.raise_for_status()
@@ -223,17 +219,36 @@ def get_units_shipped_t30():
 
     df = pd.read_csv(io.StringIO(content), sep="\t")
 
-    df_units = df[[
-        "seller-sku",
-        "units-shipped-t30"
-    ]].copy()
+    print("📋 Report columns:", df.columns.tolist())
+
+    # Auto-detect columns safely
+    sku_column = None
+    units_column = None
+
+    for col in df.columns:
+
+        col_lower = col.lower()
+
+        if col_lower in ["sku", "seller-sku"]:
+            sku_column = col
+
+        if col_lower in ["unitsshippedt30", "units-shipped-t30"]:
+            units_column = col
+
+    if sku_column is None or units_column is None:
+
+        raise Exception(
+            f"Required columns not found. Available columns: {df.columns.tolist()}"
+        )
+
+    df_units = df[[sku_column, units_column]].copy()
 
     df_units.rename(columns={
-        "seller-sku": "sellerSku",
-        "units-shipped-t30": "Units Shipped T30"
+        sku_column: "sellerSku",
+        units_column: "Units Shipped T30"
     }, inplace=True)
 
-    print(f"✅ Units Shipped rows: {len(df_units)}")
+    print(f"✅ Units shipped rows: {len(df_units)}")
 
     return df_units
 
@@ -311,7 +326,7 @@ def upload_to_sheet(name, df):
             else:
                 raise
 
-    raise Exception("❌ Upload failed")
+    raise Exception("Upload failed")
 
 
 # ================= UPLOAD =================
@@ -320,7 +335,5 @@ upload_to_sheet(AWD_WORKSHEET_NAME, df_awd)
 
 upload_to_sheet(FBA_WORKSHEET_NAME, df_fba)
 
-
-# ================= DONE =================
 
 print("🚀 PIPELINE COMPLETED SUCCESSFULLY")

@@ -189,7 +189,7 @@ def get_units_shipped_t30():
 
         time.sleep(10)
 
-    # Get download URL
+    # Download report
     doc = requests.get(
         f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/documents/{document_id}",
         headers={"x-amz-access-token": access_token}
@@ -206,10 +206,13 @@ def get_units_shipped_t30():
         sep="\t"
     )
 
-    df_units = df[[
-        "sku",
-        "units-shipped-t30"
-    ]].copy()
+    # Extract and convert numeric properly
+    df_units = df[["sku", "units-shipped-t30"]].copy()
+
+    df_units["units-shipped-t30"] = pd.to_numeric(
+        df_units["units-shipped-t30"],
+        errors="coerce"
+    ).fillna(0).astype(int)
 
     df_units.rename(columns={
         "sku": "sellerSku",
@@ -224,16 +227,13 @@ def get_units_shipped_t30():
 # ================= EXTRACTION DATE =================
 
 EST_TZ = timezone(timedelta(hours=-5))
-
 extracted_at = datetime.now(EST_TZ).strftime("%Y-%m-%d")
 
 
 # ================= GET DATA =================
 
 df_awd = get_awd_inventory()
-
 df_fba = get_fba_inventory()
-
 df_units = get_units_shipped_t30()
 
 
@@ -245,8 +245,7 @@ df_fba = df_fba.merge(
     how="left"
 )
 
-df_fba["Units Shipped T30"] = df_fba["Units Shipped T30"].fillna(0)
-
+df_fba["Units Shipped T30"] = df_fba["Units Shipped T30"].fillna(0).astype(int)
 df_fba["Extracted At"] = extracted_at
 
 df_awd["Extracted At"] = extracted_at
@@ -255,7 +254,6 @@ df_awd["Extracted At"] = extracted_at
 # ================= CLEAN =================
 
 df_fba = df_fba.replace([np.inf, -np.inf], "").fillna("")
-
 df_awd = df_awd.replace([np.inf, -np.inf], "").fillna("")
 
 
@@ -299,7 +297,6 @@ def upload_to_sheet(name, df):
 # ================= UPLOAD =================
 
 upload_to_sheet(AWD_WORKSHEET_NAME, df_awd)
-
 upload_to_sheet(FBA_WORKSHEET_NAME, df_fba)
 
 

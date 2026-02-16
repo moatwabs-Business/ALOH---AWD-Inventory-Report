@@ -19,6 +19,8 @@ FBA_WORKSHEET_NAME = "Amazon Data  API"
 
 MAX_GSPREAD_RETRIES = 5
 
+MARKETPLACE_ID = "ATVPDKIKX0DER"
+
 
 # ================= AMAZON SECRETS =================
 
@@ -48,175 +50,236 @@ gs_client = gspread.authorize(creds)
 print("✅ Google authenticated")
 
 
-# ================= STEP 1 — GET AMAZON ACCESS TOKEN =================
+# ================= GET AMAZON ACCESS TOKEN =================
 
-token_response = requests.post(
-    "https://api.amazon.com/auth/o2/token",
-    data={
-        "grant_type": "refresh_token",
-        "refresh_token": AMAZON_REFRESH_TOKEN,
-        "client_id": AMAZON_LWA_CLIENT_ID,
-        "client_secret": AMAZON_LWA_CLIENT_SECRET,
-    },
-    timeout=30
-)
+def get_access_token():
 
-token_response.raise_for_status()
+    response = requests.post(
+        "https://api.amazon.com/auth/o2/token",
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": AMAZON_REFRESH_TOKEN,
+            "client_id": AMAZON_LWA_CLIENT_ID,
+            "client_secret": AMAZON_LWA_CLIENT_SECRET,
+        },
+        timeout=30
+    )
 
-access_token = token_response.json()["access_token"]
+    response.raise_for_status()
+
+    return response.json()["access_token"]
+
+
+access_token = get_access_token()
 
 print("✅ Amazon access token received")
 
 
-# ================= STEP 2 — GET AWD INVENTORY =================
+# ================= GET AWD INVENTORY =================
 
-awd_response = requests.get(
-    "https://sellingpartnerapi-na.amazon.com/awd/2024-05-09/inventory",
-    headers={"x-amz-access-token": access_token},
-    timeout=60
-)
+def get_awd_inventory():
 
-awd_response.raise_for_status()
+    response = requests.get(
+        "https://sellingpartnerapi-na.amazon.com/awd/2024-05-09/inventory",
+        headers={"x-amz-access-token": access_token},
+        timeout=60
+    )
 
-awd_inventory = awd_response.json()["inventory"]
+    response.raise_for_status()
 
-df_awd = pd.DataFrame(awd_inventory)
+    df = pd.DataFrame(response.json()["inventory"])
 
-print(f"✅ AWD data loaded: {df_awd.shape[0]} rows")
+    print(f"✅ AWD rows: {len(df)}")
 
-
-# ================= STEP 3 — GET FBA INVENTORY =================
-
-fba_response = requests.get(
-    "https://sellingpartnerapi-na.amazon.com/fba/inventory/v1/summaries",
-    headers={"x-amz-access-token": access_token},
-    params={
-        "details": "true",
-        "granularityType": "Marketplace",
-        "granularityId": "ATVPDKIKX0DER",
-        "marketplaceIds": "ATVPDKIKX0DER"
-    },
-    timeout=60
-)
-
-fba_response.raise_for_status()
-
-fba_inventory = fba_response.json()['payload']["inventorySummaries"]
-
-fba_records = []
-
-for item in fba_inventory:
-
-    inventory = item.get("inventoryDetails", {})
-    reserved = inventory.get("reservedQuantity", {})
-
-    record = {
-
-        "sellerSku": item.get("sellerSku", ""),
-        "asin": item.get("asin", ""),
-
-        "Inventory Supply at FBA":
-            inventory.get("fulfillableQuantity", 0),
-
-        "Reserved FC Processing":
-            reserved.get("fcProcessingQuantity", 0),
-
-        "Reserved Customer Order":
-            reserved.get("customerOrderQuantity", 0)
-
-    }
-
-    fba_records.append(record)
-
-df_fba = pd.DataFrame(fba_records)
-
-print(f"✅ FBA data loaded: {df_fba.shape[0]} rows")
+    return df
 
 
-# ================= STEP 4 — ADD EXTRACTION DATE COLUMN (DATE ONLY) =================
+# ================= GET FBA INVENTORY =================
 
-# Using EST timezone (UTC-5)
+def get_fba_inventory():
+
+    response = requests.get(
+        "https://sellingpartnerapi-na.amazon.com/fba/inventory/v1/summaries",
+        headers={"x-amz-access-token": access_token},
+        params={
+            "details": "true",
+            "granularityType": "Marketplace",
+            "granularityId": MARKETPLACE_ID,
+            "marketplaceIds": MARKETPLACE_ID
+        },
+        timeout=60
+    )
+
+    response.raise_for_status()
+
+    records = []
+
+    for item in response.json()['payload']["inventorySummaries"]:
+
+        inventory = item.get("inventoryDetails", {})
+        reserved = inventory.get("reservedQuantity", {})
+
+        records.append({
+
+            "sellerSku": item.get("sellerSku", ""),
+            "asin": item.get("asin", ""),
+
+            "Inventory Supply at FBA":
+                inventory.get("fulfillableQuantity", 0),
+
+            "Reserved FC Processing":
+                reserved.get("fcProcessingQuantity", 0),
+
+            "Reserved Customer Order":
+                reserved.get("customerOrderQuantity", 0)
+        })
+
+    df = pd.DataFrame(records)
+
+    print(f"✅ FBA rows: {len(df)}")
+
+    return df
+
+
+# ================= GET UNITS SHIPPED T30 =================
+
+def get_units_shipped_t30():
+
+    print("📦 Requesting Units Shipped T30 report...")
+
+    create_report = requests.post(
+        "https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports",
+        headers={
+            "x-amz-access-token": access_token,
+            "Content-Type": "application/json"
+        },
+        json={
+            "reportType": "GET_SALES_AND_TRAFFIC_REPORT",
+            "marketplaceIds": [MARKETPLACE_ID],
+            "reportOptions": {
+                "reportPeriod": "DAY",
+                "asinGranularity": "SKU"
+            }
+        }
+    )
+
+    create_report.raise_for_status()
+
+    report_id = create_report.json()["reportId"]
+
+    while True:
+
+        status = requests.get(
+            f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports/{report_id}",
+            headers={"x-amz-access-token": access_token}
+        ).json()
+
+        if status["processingStatus"] == "DONE":
+            document_id = status["reportDocumentId"]
+            break
+
+        print("⏳ Waiting for report...")
+        time.sleep(10)
+
+    doc = requests.get(
+        f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/documents/{document_id}",
+        headers={"x-amz-access-token": access_token}
+    ).json()
+
+    report_json = requests.get(doc["url"]).json()
+
+    df = pd.DataFrame(report_json["salesAndTrafficBySku"])
+
+    df = df[["sku", "unitsShippedT30"]]
+
+    df.rename(columns={
+        "sku": "sellerSku",
+        "unitsShippedT30": "Units Shipped T30"
+    }, inplace=True)
+
+    print(f"✅ Units shipped rows: {len(df)}")
+
+    return df
+
+
+# ================= EXTRACTION DATE =================
+
 EST_TZ = timezone(timedelta(hours=-5))
 
-# DATE ONLY (YYYY-MM-DD)
 extracted_at = datetime.now(EST_TZ).strftime("%Y-%m-%d")
 
-df_awd["Extracted At"] = extracted_at
+
+# ================= GET DATA =================
+
+df_awd = get_awd_inventory()
+
+df_fba = get_fba_inventory()
+
+df_units = get_units_shipped_t30()
+
+
+# ================= MERGE =================
+
+df_fba = df_fba.merge(
+    df_units,
+    on="sellerSku",
+    how="left"
+)
+
+df_fba["Units Shipped T30"] = df_fba["Units Shipped T30"].fillna(0)
+
 df_fba["Extracted At"] = extracted_at
-
-print(f"📅 Extraction date added: {extracted_at}")
-
-
-# ================= STEP 5 — CLEAN DATA =================
-
-df_awd = df_awd.replace([np.inf, -np.inf], "")
-df_awd = df_awd.fillna("")
-
-df_fba = df_fba.replace([np.inf, -np.inf], "")
-df_fba = df_fba.fillna("")
-
-print("✅ Data cleaned")
+df_awd["Extracted At"] = extracted_at
 
 
-# ================= STEP 6 — UPLOAD FUNCTION =================
+# ================= CLEAN =================
 
-def upload_to_sheet(worksheet_name, dataframe):
+df_fba = df_fba.replace([np.inf, -np.inf], "").fillna("")
+df_awd = df_awd.replace([np.inf, -np.inf], "").fillna("")
 
-    data = [dataframe.columns.tolist()] + dataframe.values.tolist()
+
+# ================= UPLOAD FUNCTION =================
+
+def upload_to_sheet(name, df):
+
+    data = [df.columns.tolist()] + df.values.tolist()
 
     for attempt in range(MAX_GSPREAD_RETRIES):
 
         try:
 
-            spreadsheet = gs_client.open(SPREADSHEET_NAME)
+            sheet = gs_client.open(SPREADSHEET_NAME).worksheet(name)
 
-            worksheet = spreadsheet.worksheet(worksheet_name)
+            sheet.batch_clear(["A1:Z100000"])
 
-            print(f"🧹 Clearing sheet: {worksheet_name}")
-
-            worksheet.batch_clear(["A1:Z100000"])
-
-            print(f"⬆️ Uploading fresh data to {worksheet_name}")
-
-            worksheet.update(
+            sheet.update(
                 values=data,
                 range_name="A1",
                 value_input_option="USER_ENTERED"
             )
 
-            print(f"🎉 {worksheet_name} updated successfully ({len(dataframe)} rows)")
+            print(f"🎉 Uploaded {len(df)} rows to {name}")
 
-            break
+            return
 
         except APIError as e:
 
-            status = getattr(e.response, "status_code", None)
-
-            if status == 503:
+            if getattr(e.response, "status_code", None) == 503:
 
                 wait = 2 ** attempt
-
-                print(f"⚠️ Google API 503 — retrying in {wait}s")
-
                 time.sleep(wait)
 
             else:
                 raise
 
-    else:
-        raise Exception(f"❌ Failed updating {worksheet_name}")
+    raise Exception("Upload failed")
 
 
-# ================= STEP 7 — UPLOAD AWD DATA =================
+# ================= UPLOAD =================
 
 upload_to_sheet(AWD_WORKSHEET_NAME, df_awd)
-
-
-# ================= STEP 8 — UPLOAD FBA DATA =================
 
 upload_to_sheet(FBA_WORKSHEET_NAME, df_fba)
 
 
-# ================= DONE =================
-
-print("🚀 AMAZON AWD + FBA PIPELINE COMPLETED SUCCESSFULLY")
+print("🚀 PIPELINE COMPLETED SUCCESSFULLY")

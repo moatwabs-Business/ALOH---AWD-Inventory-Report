@@ -115,7 +115,9 @@ def get_fba_inventory():
 
     records = []
 
-    for item in response.json()['payload']["inventorySummaries"]:
+    data = response.json()
+
+    for item in data['payload']["inventorySummaries"]:
 
         inventory = item.get("inventoryDetails", {})
         reserved = inventory.get("reservedQuantity", {})
@@ -165,6 +167,8 @@ def get_units_shipped_t30():
 
     report_id = create_report.json()["reportId"]
 
+    print(f"Report ID: {report_id}")
+
     while True:
 
         status = requests.get(
@@ -172,12 +176,16 @@ def get_units_shipped_t30():
             headers={"x-amz-access-token": access_token}
         ).json()
 
-        if status["processingStatus"] == "DONE":
+        processing_status = status["processingStatus"]
+
+        print("Status:", processing_status)
+
+        if processing_status == "DONE":
 
             document_id = status["reportDocumentId"]
             break
 
-        elif status["processingStatus"] in ["FATAL", "CANCELLED"]:
+        elif processing_status in ["FATAL", "CANCELLED"]:
             raise Exception("Report failed")
 
         time.sleep(10)
@@ -187,7 +195,9 @@ def get_units_shipped_t30():
         headers={"x-amz-access-token": access_token}
     ).json()
 
-    response = requests.get(doc["url"])
+    download_url = doc["url"]
+
+    response = requests.get(download_url)
 
     response.raise_for_status()
 
@@ -255,7 +265,7 @@ for col in numeric_columns:
         ).fillna(0).astype(int)
 
 
-# Fix missing text columns
+# Fix text columns
 df_final["sellerSku"] = df_final["sellerSku"].fillna("")
 df_final["asin"] = df_final.get("asin", "").fillna("")
 
@@ -290,3 +300,26 @@ def upload_to_sheet(name, df):
             )
 
             print(f"Uploaded {len(df)} rows to {name}")
+
+            return
+
+        except APIError as e:
+
+            if getattr(e.response, "status_code", None) == 503:
+
+                wait = 2 ** attempt
+                time.sleep(wait)
+
+            else:
+                raise
+
+    raise Exception("Upload failed")
+
+
+# ================= UPLOAD =================
+
+upload_to_sheet(AWD_WORKSHEET_NAME, df_awd)
+upload_to_sheet(FBA_WORKSHEET_NAME, df_final)
+
+
+print("🚀 PIPELINE COMPLETED SUCCESSFULLY")

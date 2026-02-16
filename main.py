@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import gzip
 import io
 import requests
 import pandas as pd
@@ -16,20 +15,19 @@ from datetime import datetime, timezone, timedelta
 # ================= CONFIG =================
 
 SPREADSHEET_NAME = "Inventory Analysis-ALOH-v1"
-
 AWD_WORKSHEET_NAME = "AWD Data API Request"
 FBA_WORKSHEET_NAME = "Amazon Data  API"
 
-MAX_GSPREAD_RETRIES = 5
-
 MARKETPLACE_ID = "ATVPDKIKX0DER"
+
+MAX_GSPREAD_RETRIES = 5
 
 
 # ================= AMAZON SECRETS =================
 
-AMAZON_REFRESH_TOKEN = os.environ["AMAZON_REFRESH_TOKEN"]
-AMAZON_LWA_CLIENT_ID = os.environ["AMAZON_LWA_CLIENT_ID"]
-AMAZON_LWA_CLIENT_SECRET = os.environ["AMAZON_LWA_CLIENT_SECRET"]
+REFRESH_TOKEN = os.environ["AMAZON_REFRESH_TOKEN"]
+CLIENT_ID = os.environ["AMAZON_LWA_CLIENT_ID"]
+CLIENT_SECRET = os.environ["AMAZON_LWA_CLIENT_SECRET"]
 
 
 # ================= GOOGLE AUTH =================
@@ -61,9 +59,9 @@ def get_access_token():
         "https://api.amazon.com/auth/o2/token",
         data={
             "grant_type": "refresh_token",
-            "refresh_token": AMAZON_REFRESH_TOKEN,
-            "client_id": AMAZON_LWA_CLIENT_ID,
-            "client_secret": AMAZON_LWA_CLIENT_SECRET,
+            "refresh_token": REFRESH_TOKEN,
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
         },
         timeout=30
     )
@@ -81,8 +79,6 @@ print("✅ Amazon access token received")
 # ================= GET AWD INVENTORY =================
 
 def get_awd_inventory():
-
-    print("📦 Getting AWD inventory...")
 
     response = requests.get(
         "https://sellingpartnerapi-na.amazon.com/awd/2024-05-09/inventory",
@@ -102,8 +98,6 @@ def get_awd_inventory():
 # ================= GET FBA INVENTORY =================
 
 def get_fba_inventory():
-
-    print("📦 Getting FBA inventory...")
 
     response = requests.get(
         "https://sellingpartnerapi-na.amazon.com/fba/inventory/v1/summaries",
@@ -153,7 +147,7 @@ def get_fba_inventory():
 
 def get_units_shipped_t30():
 
-    print("📊 Requesting Sales and Traffic report...")
+    print("📊 Requesting Inventory Planning report...")
 
     create_report = requests.post(
         "https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports",
@@ -162,12 +156,8 @@ def get_units_shipped_t30():
             "Content-Type": "application/json"
         },
         json={
-            "reportType": "GET_SALES_AND_TRAFFIC_REPORT",
-            "marketplaceIds": [MARKETPLACE_ID],
-            "reportOptions": {
-                "reportPeriod": "DAY",
-                "asinGranularity": "SKU"
-            }
+            "reportType": "GET_FBA_INVENTORY_PLANNING_DATA",
+            "marketplaceIds": [MARKETPLACE_ID]
         }
     )
 
@@ -175,77 +165,55 @@ def get_units_shipped_t30():
 
     report_id = create_report.json()["reportId"]
 
-    print(f"📄 Report ID: {report_id}")
+    print(f"Report ID: {report_id}")
 
+    # Wait for report
     while True:
 
-        status_response = requests.get(
+        status = requests.get(
             f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports/{report_id}",
             headers={"x-amz-access-token": access_token}
-        )
+        ).json()
 
-        status_response.raise_for_status()
+        processing_status = status["processingStatus"]
 
-        status = status_response.json()["processingStatus"]
+        print("Status:", processing_status)
 
-        print(f"⏳ Status: {status}")
+        if processing_status == "DONE":
 
-        if status == "DONE":
-            document_id = status_response.json()["reportDocumentId"]
+            document_id = status["reportDocumentId"]
             break
 
-        elif status in ["FATAL", "CANCELLED"]:
+        elif processing_status in ["FATAL", "CANCELLED"]:
             raise Exception("Report failed")
 
         time.sleep(10)
 
-    doc_response = requests.get(
+    # Get download URL
+    doc = requests.get(
         f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/documents/{document_id}",
         headers={"x-amz-access-token": access_token}
+    ).json()
+
+    download_url = doc["url"]
+
+    response = requests.get(download_url)
+
+    response.raise_for_status()
+
+    df = pd.read_csv(
+        io.StringIO(response.text),
+        sep="\t"
     )
 
-    doc_response.raise_for_status()
-
-    download_url = doc_response.json()["url"]
-
-    compressed = requests.get(download_url)
-
-    compressed.raise_for_status()
-
-    buffer = io.BytesIO(compressed.content)
-
-    with gzip.GzipFile(fileobj=buffer) as gz:
-        content = gz.read().decode("utf-8")
-
-    df = pd.read_csv(io.StringIO(content), sep="\t")
-
-    print("📋 Report columns:", df.columns.tolist())
-
-    # Auto-detect columns safely
-    sku_column = None
-    units_column = None
-
-    for col in df.columns:
-
-        col_lower = col.lower()
-
-        if col_lower in ["sku", "seller-sku"]:
-            sku_column = col
-
-        if col_lower in ["unitsshippedt30", "units-shipped-t30"]:
-            units_column = col
-
-    if sku_column is None or units_column is None:
-
-        raise Exception(
-            f"Required columns not found. Available columns: {df.columns.tolist()}"
-        )
-
-    df_units = df[[sku_column, units_column]].copy()
+    df_units = df[[
+        "sku",
+        "units-shipped-t30"
+    ]].copy()
 
     df_units.rename(columns={
-        sku_column: "sellerSku",
-        units_column: "Units Shipped T30"
+        "sku": "sellerSku",
+        "units-shipped-t30": "Units Shipped T30"
     }, inplace=True)
 
     print(f"✅ Units shipped rows: {len(df_units)}")
@@ -301,17 +269,17 @@ def upload_to_sheet(name, df):
 
         try:
 
-            sheet = gs_client.open(SPREADSHEET_NAME).worksheet(name)
+            worksheet = gs_client.open(SPREADSHEET_NAME).worksheet(name)
 
-            sheet.batch_clear(["A1:Z100000"])
+            worksheet.batch_clear(["A1:Z100000"])
 
-            sheet.update(
+            worksheet.update(
                 values=data,
                 range_name="A1",
                 value_input_option="USER_ENTERED"
             )
 
-            print(f"🎉 Uploaded {len(df)} rows to {name}")
+            print(f"Uploaded {len(df)} rows to {name}")
 
             return
 
@@ -320,7 +288,6 @@ def upload_to_sheet(name, df):
             if getattr(e.response, "status_code", None) == 503:
 
                 wait = 2 ** attempt
-                print(f"⚠️ Retry in {wait}s")
                 time.sleep(wait)
 
             else:

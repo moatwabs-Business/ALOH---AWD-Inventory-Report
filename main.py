@@ -15,8 +15,7 @@ from datetime import datetime, timezone, timedelta
 # ================= CONFIG =================
 
 SPREADSHEET_NAME = "Inventory Analysis-ALOH-v1"
-AWD_WORKSHEET_NAME = "AWD Data API Request"
-FBA_WORKSHEET_NAME = "Amazon Data  API"
+WORKSHEET_NAME = "Amazon Data  API"
 
 MARKETPLACE_ID = "ATVPDKIKX0DER"
 
@@ -76,78 +75,9 @@ access_token = get_access_token()
 print("✅ Amazon access token received")
 
 
-# ================= GET AWD INVENTORY =================
+# ================= REQUEST INVENTORY PLANNING REPORT =================
 
-def get_awd_inventory():
-
-    response = requests.get(
-        "https://sellingpartnerapi-na.amazon.com/awd/2024-05-09/inventory",
-        headers={"x-amz-access-token": access_token},
-        timeout=60
-    )
-
-    response.raise_for_status()
-
-    df = pd.DataFrame(response.json()["inventory"])
-
-    print(f"✅ AWD rows: {len(df)}")
-
-    return df
-
-
-# ================= GET FBA INVENTORY =================
-
-def get_fba_inventory():
-
-    response = requests.get(
-        "https://sellingpartnerapi-na.amazon.com/fba/inventory/v1/summaries",
-        headers={"x-amz-access-token": access_token},
-        params={
-            "details": "true",
-            "granularityType": "Marketplace",
-            "granularityId": MARKETPLACE_ID,
-            "marketplaceIds": MARKETPLACE_ID
-        },
-        timeout=60
-    )
-
-    response.raise_for_status()
-
-    records = []
-
-    data = response.json()
-
-    for item in data['payload']["inventorySummaries"]:
-
-        inventory = item.get("inventoryDetails", {})
-        reserved = inventory.get("reservedQuantity", {})
-
-        records.append({
-
-            "sellerSku": item.get("sellerSku", ""),
-            "asin": item.get("asin", ""),
-
-            "Inventory Supply at FBA":
-                inventory.get("fulfillableQuantity", 0),
-
-            "Reserved FC Processing":
-                reserved.get("fcProcessingQuantity", 0),
-
-            "Reserved Customer Order":
-                reserved.get("customerOrderQuantity", 0)
-
-        })
-
-    df = pd.DataFrame(records)
-
-    print(f"✅ FBA rows: {len(df)}")
-
-    return df
-
-
-# ================= GET UNITS SHIPPED T30 =================
-
-def get_units_shipped_t30():
+def get_inventory_planning_data():
 
     print("📊 Requesting Inventory Planning report...")
 
@@ -169,6 +99,8 @@ def get_units_shipped_t30():
 
     print(f"Report ID: {report_id}")
 
+
+    # Wait for report completion
     while True:
 
         status = requests.get(
@@ -190,6 +122,8 @@ def get_units_shipped_t30():
 
         time.sleep(10)
 
+
+    # Download report
     doc = requests.get(
         f"https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/documents/{document_id}",
         headers={"x-amz-access-token": access_token}
@@ -201,63 +135,41 @@ def get_units_shipped_t30():
 
     response.raise_for_status()
 
+
+    # Load into dataframe
     df = pd.read_csv(
         io.StringIO(response.text),
         sep="\t"
     )
 
-    df_units = df[["sku", "units-shipped-t30"]].copy()
 
-    df_units.rename(columns={
+    # Extract required columns ONLY
+    df_final = df[[
+        "sku",
+        "asin",
+        "Inventory Supply at FBA",
+        "Reserved FC Processing",
+        "Reserved Customer Order",
+        "units-shipped-t30"
+    ]].copy()
+
+
+    # Rename columns
+    df_final.rename(columns={
         "sku": "sellerSku",
         "units-shipped-t30": "Units Shipped T30"
     }, inplace=True)
 
-    df_units["Units Shipped T30"] = pd.to_numeric(
-        df_units["Units Shipped T30"],
-        errors="coerce"
-    ).fillna(0).astype(int)
 
-    print(f"✅ Units shipped rows: {len(df_units)}")
+    # Convert numeric columns safely
+    numeric_columns = [
+        "Inventory Supply at FBA",
+        "Reserved FC Processing",
+        "Reserved Customer Order",
+        "Units Shipped T30"
+    ]
 
-    return df_units
-
-
-# ================= EXTRACTION DATE =================
-
-EST_TZ = timezone(timedelta(hours=-5))
-extracted_at = datetime.now(EST_TZ).strftime("%Y-%m-%d")
-
-
-# ================= GET DATA =================
-
-df_awd = get_awd_inventory()
-df_fba = get_fba_inventory()
-df_units = get_units_shipped_t30()
-
-
-# ================= FULL OUTER JOIN =================
-
-df_final = pd.merge(
-    df_fba,
-    df_units,
-    on="sellerSku",
-    how="outer"
-)
-
-
-# ================= FIX NUMERIC COLUMNS =================
-
-numeric_columns = [
-    "Units Shipped T30",
-    "Inventory Supply at FBA",
-    "Reserved FC Processing",
-    "Reserved Customer Order"
-]
-
-for col in numeric_columns:
-
-    if col in df_final.columns:
+    for col in numeric_columns:
 
         df_final[col] = pd.to_numeric(
             df_final[col],
@@ -265,23 +177,30 @@ for col in numeric_columns:
         ).fillna(0).astype(int)
 
 
-# Fix text columns
-df_final["sellerSku"] = df_final["sellerSku"].fillna("")
-df_final["asin"] = df_final.get("asin", "").fillna("")
+    print(f"✅ Extracted rows: {len(df_final)}")
+
+    return df_final
+
+
+# ================= ADD EXTRACTION DATE =================
+
+EST_TZ = timezone(timedelta(hours=-5))
+extracted_at = datetime.now(EST_TZ).strftime("%Y-%m-%d")
+
+
+df_final = get_inventory_planning_data()
 
 df_final["Extracted At"] = extracted_at
-df_awd["Extracted At"] = extracted_at
 
 
 # ================= CLEAN =================
 
 df_final = df_final.replace([np.inf, -np.inf], "").fillna("")
-df_awd = df_awd.replace([np.inf, -np.inf], "").fillna("")
 
 
-# ================= UPLOAD FUNCTION =================
+# ================= UPLOAD TO GOOGLE SHEETS =================
 
-def upload_to_sheet(name, df):
+def upload_to_sheet(df):
 
     data = [df.columns.tolist()] + df.values.tolist()
 
@@ -289,7 +208,7 @@ def upload_to_sheet(name, df):
 
         try:
 
-            worksheet = gs_client.open(SPREADSHEET_NAME).worksheet(name)
+            worksheet = gs_client.open(SPREADSHEET_NAME).worksheet(WORKSHEET_NAME)
 
             worksheet.batch_clear(["A1:Z100000"])
 
@@ -299,7 +218,7 @@ def upload_to_sheet(name, df):
                 value_input_option="RAW"
             )
 
-            print(f"Uploaded {len(df)} rows to {name}")
+            print(f"✅ Uploaded {len(df)} rows successfully")
 
             return
 
@@ -313,13 +232,12 @@ def upload_to_sheet(name, df):
             else:
                 raise
 
+
     raise Exception("Upload failed")
 
 
-# ================= UPLOAD =================
+# ================= RUN =================
 
-upload_to_sheet(AWD_WORKSHEET_NAME, df_awd)
-upload_to_sheet(FBA_WORKSHEET_NAME, df_final)
-
+upload_to_sheet(df_final)
 
 print("🚀 PIPELINE COMPLETED SUCCESSFULLY")

@@ -133,7 +133,7 @@ df_fba = pd.DataFrame(fba_records)
 print(f"✅ FBA data loaded: {df_fba.shape[0]} rows")
 
 
-# ================= STEP 4 — ADD EXTRACTION TIMESTAMP =================
+# ================= STEP 4 — ADD EXTRACTION TIMESTAMP COLUMN =================
 
 EST_TZ = timezone(timedelta(hours=-5))
 
@@ -142,7 +142,7 @@ extracted_at = datetime.now(EST_TZ).strftime("%Y-%m-%d %H:%M:%S EST")
 df_awd["Extracted At"] = extracted_at
 df_fba["Extracted At"] = extracted_at
 
-print(f"🕒 Extraction timestamp: {extracted_at}")
+print(f"🕒 Extraction timestamp added: {extracted_at}")
 
 
 # ================= STEP 5 — CLEAN DATA =================
@@ -156,7 +156,7 @@ df_fba = df_fba.fillna("")
 print("✅ Data cleaned")
 
 
-# ================= FUNCTION TO UPLOAD DATA =================
+# ================= STEP 6 — UPLOAD FUNCTION =================
 
 def upload_to_sheet(worksheet_name, dataframe):
 
@@ -167,28 +167,22 @@ def upload_to_sheet(worksheet_name, dataframe):
         try:
 
             spreadsheet = gs_client.open(SPREADSHEET_NAME)
+
             worksheet = spreadsheet.worksheet(worksheet_name)
 
             print(f"🧹 Clearing sheet: {worksheet_name}")
 
             worksheet.batch_clear(["A1:Z100000"])
 
-            print(f"🕒 Writing extraction timestamp to {worksheet_name}")
-
-            worksheet.update(
-                values=[[f"Last Extracted At: {extracted_at}"]],
-                range_name="A1"
-            )
-
-            print(f"⬆️ Uploading data to {worksheet_name}")
+            print(f"⬆️ Uploading fresh data to {worksheet_name}")
 
             worksheet.update(
                 values=data,
-                range_name="A2",
+                range_name="A1",
                 value_input_option="USER_ENTERED"
             )
 
-            print(f"🎉 {worksheet_name} updated ({len(dataframe)} rows)")
+            print(f"🎉 {worksheet_name} updated successfully ({len(dataframe)} rows)")
 
             break
 
@@ -200,7 +194,7 @@ def upload_to_sheet(worksheet_name, dataframe):
 
                 wait = 2 ** attempt
 
-                print(f"⚠️ Retry in {wait}s...")
+                print(f"⚠️ Google API 503 — retrying in {wait}s")
 
                 time.sleep(wait)
 
@@ -211,14 +205,16 @@ def upload_to_sheet(worksheet_name, dataframe):
         raise Exception(f"❌ Failed updating {worksheet_name}")
 
 
-# ================= STEP 6 — UPLOAD AWD DATA =================
+# ================= STEP 7 — UPLOAD AWD DATA =================
 
 upload_to_sheet(AWD_WORKSHEET_NAME, df_awd)
 
 
-# ================= STEP 7 — UPLOAD FBA DATA =================
+# ================= STEP 8 — UPLOAD FBA DATA =================
 
 upload_to_sheet(FBA_WORKSHEET_NAME, df_fba)
 
+
+# ================= DONE =================
 
 print("🚀 AMAZON AWD + FBA PIPELINE COMPLETED SUCCESSFULLY")

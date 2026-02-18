@@ -15,7 +15,9 @@ from datetime import datetime, timezone, timedelta
 # ================= CONFIG =================
 
 SPREADSHEET_NAME = "Inventory Analysis-ALOH-v1"
-WORKSHEET_NAME = "Amazon Data  API"
+
+FBA_WORKSHEET_NAME = "Amazon Data  API"
+AWD_WORKSHEET_NAME = "AWD Data API Request"
 
 MARKETPLACE_ID = "ATVPDKIKX0DER"
 
@@ -54,6 +56,8 @@ print("✅ Google authenticated")
 
 def get_access_token():
 
+    print("🔑 Requesting Amazon access token...")
+
     response = requests.post(
         "https://api.amazon.com/auth/o2/token",
         data={
@@ -67,19 +71,18 @@ def get_access_token():
 
     response.raise_for_status()
 
-    return response.json()["access_token"]
+    token = response.json()["access_token"]
+
+    print("✅ Amazon access token received")
+
+    return token
 
 
-access_token = get_access_token()
+# ================= GET INVENTORY PLANNING REPORT =================
 
-print("✅ Amazon access token received")
+def get_inventory_planning_data(access_token):
 
-
-# ================= REQUEST INVENTORY PLANNING REPORT =================
-
-def get_inventory_planning_data():
-
-    print("📊 Requesting Inventory Planning report...")
+    print("📊 Requesting Inventory Planning Report...")
 
     create_report = requests.post(
         "https://sellingpartnerapi-na.amazon.com/reports/2021-06-30/reports",
@@ -110,7 +113,7 @@ def get_inventory_planning_data():
 
         processing_status = status["processingStatus"]
 
-        print("Status:", processing_status)
+        print("Report status:", processing_status)
 
         if processing_status == "DONE":
 
@@ -131,20 +134,15 @@ def get_inventory_planning_data():
 
     download_url = doc["url"]
 
-    response = requests.get(download_url)
+    file = requests.get(download_url)
 
-    response.raise_for_status()
+    file.raise_for_status()
 
-
-    # Load into dataframe
-    df = pd.read_csv(
-        io.StringIO(response.text),
-        sep="\t"
-    )
+    df = pd.read_csv(io.StringIO(file.text), sep="\t")
 
 
-    # Extract required columns ONLY
-    df_final = df[[
+    # Extract required columns
+    df = df[[
         "sku",
         "asin",
         "Inventory Supply at FBA",
@@ -154,53 +152,94 @@ def get_inventory_planning_data():
     ]].copy()
 
 
-    # Rename columns
-    df_final.rename(columns={
+    df.rename(columns={
         "sku": "sellerSku",
         "units-shipped-t30": "Units Shipped T30"
     }, inplace=True)
 
 
-    # Convert numeric columns safely
-    numeric_columns = [
+    # Convert numeric safely
+    numeric_cols = [
         "Inventory Supply at FBA",
         "Reserved FC Processing",
         "Reserved Customer Order",
         "Units Shipped T30"
     ]
 
-    for col in numeric_columns:
+    for col in numeric_cols:
 
-        df_final[col] = pd.to_numeric(
-            df_final[col],
+        df[col] = pd.to_numeric(
+            df[col],
             errors="coerce"
         ).fillna(0).astype(int)
 
 
-    print(f"✅ Extracted rows: {len(df_final)}")
-
-    return df_final
-
-
-# ================= ADD EXTRACTION DATE =================
-
-EST_TZ = timezone(timedelta(hours=-5))
-extracted_at = datetime.now(EST_TZ).strftime("%Y-%m-%d")
+    # Add Extracted At column
+    EST_TZ = timezone(timedelta(hours=-5))
+    df["Extracted At"] = datetime.now(EST_TZ).strftime("%Y-%m-%d")
 
 
-df_final = get_inventory_planning_data()
+    print(f"✅ FBA rows extracted: {len(df)}")
 
-df_final["Extracted At"] = extracted_at
-
-
-# ================= CLEAN =================
-
-df_final = df_final.replace([np.inf, -np.inf], "").fillna("")
+    return df
 
 
-# ================= UPLOAD TO GOOGLE SHEETS =================
+# ================= GET AWD INVENTORY =================
 
-def upload_to_sheet(df):
+def get_awd_inventory(access_token):
+
+    print("📦 Requesting AWD inventory...")
+
+    url = "https://sellingpartnerapi-na.amazon.com/awd/2024-05-09/inventory"
+
+    headers = {
+        "x-amz-access-token": access_token
+    }
+
+    response = requests.get(url, headers=headers, timeout=60)
+
+    response.raise_for_status()
+
+    data = response.json()["inventory"]
+
+    df = pd.DataFrame(data)
+
+
+    # Keep only required columns
+    df = df[[
+        "sku",
+        "totalInboundQuantity",
+        "totalOnhandQuantity"
+    ]].copy()
+
+
+    # Convert numeric safely
+    df["totalInboundQuantity"] = pd.to_numeric(
+        df["totalInboundQuantity"],
+        errors="coerce"
+    ).fillna(0).astype(int)
+
+    df["totalOnhandQuantity"] = pd.to_numeric(
+        df["totalOnhandQuantity"],
+        errors="coerce"
+    ).fillna(0).astype(int)
+
+
+    # Add Extracted At column
+    EST_TZ = timezone(timedelta(hours=-5))
+    df["Extracted At"] = datetime.now(EST_TZ).strftime("%Y-%m-%d")
+
+
+    print(f"✅ AWD rows extracted: {len(df)}")
+
+    return df
+
+
+# ================= GOOGLE SHEETS UPLOAD =================
+
+def upload_to_sheet(sheet_name, df):
+
+    print(f"⬆️ Uploading to sheet: {sheet_name}")
 
     data = [df.columns.tolist()] + df.values.tolist()
 
@@ -208,7 +247,7 @@ def upload_to_sheet(df):
 
         try:
 
-            worksheet = gs_client.open(SPREADSHEET_NAME).worksheet(WORKSHEET_NAME)
+            worksheet = gs_client.open(SPREADSHEET_NAME).worksheet(sheet_name)
 
             worksheet.batch_clear(["A1:Z100000"])
 
@@ -218,7 +257,7 @@ def upload_to_sheet(df):
                 value_input_option="RAW"
             )
 
-            print(f"✅ Uploaded {len(df)} rows successfully")
+            print(f"✅ Uploaded {len(df)} rows to {sheet_name}")
 
             return
 
@@ -227,17 +266,35 @@ def upload_to_sheet(df):
             if getattr(e.response, "status_code", None) == 503:
 
                 wait = 2 ** attempt
+                print(f"Retrying in {wait} seconds...")
                 time.sleep(wait)
 
             else:
                 raise
 
 
-    raise Exception("Upload failed")
+    raise Exception(f"Failed to upload to {sheet_name}")
 
 
-# ================= RUN =================
+# ================= MAIN EXECUTION =================
 
-upload_to_sheet(df_final)
+def main():
 
-print("🚀 PIPELINE COMPLETED SUCCESSFULLY")
+    access_token = get_access_token()
+
+    # FBA Inventory Planning Report
+    df_fba = get_inventory_planning_data(access_token)
+
+    # AWD Inventory
+    df_awd = get_awd_inventory(access_token)
+
+    # Upload both
+    upload_to_sheet(FBA_WORKSHEET_NAME, df_fba)
+
+    upload_to_sheet(AWD_WORKSHEET_NAME, df_awd)
+
+    print("🚀 ALL DATA UPDATED SUCCESSFULLY")
+
+
+if __name__ == "__main__":
+    main()
